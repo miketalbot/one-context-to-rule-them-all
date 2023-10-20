@@ -10,6 +10,9 @@ const handlers = {}
  * @returns {Array} A tuple containing the deep target object and the final key to access the value.
  */
 export function useDeepTargetAndKey(key, activeTarget) {
+    if (!key) {
+        console.trace("No key")
+    }
     let { target } = useBoundContext()
     activeTarget ??= target
     return useMemo(getTargetAndKey, [activeTarget, key])
@@ -47,10 +50,10 @@ export function useBoundValue(path, defaultValue, target) {
     const setValue = useCallback(handleSetValue, [activeTarget, key])
 
     useLayoutEffect(() => {
-        const keyHandlers = (handlers[key] ??= [])
-        keyHandlers.push(handleChange)
+        const keyHandlers = (handlers[key] ??= new Set())
+        keyHandlers.add(handleChange)
         return () => {
-            keyHandlers.splice(keyHandlers.indexOf(handleChange), 1)
+            keyHandlers.delete(handleChange)
         }
     }, [activeTarget])
 
@@ -62,16 +65,18 @@ export function useBoundValue(path, defaultValue, target) {
      * This also notifies all registered handlers of the change.
      * @param {*} value - The new value or a function to determine the new value.
      */
-    function handleSetValue(value) {
+    function handleSetValue(value, skipSelf) {
         if (typeof value === "function") {
             value = value(activeTarget[key])
         }
         if (activeTarget[key] === value) return
         activeTarget[key] = value
-        const keyHandlers = handlers[key] ?? []
-        for (const handler of keyHandlers) {
-            handler(activeTarget, value)
-        }
+        const keyHandlers = (handlers[key] ??= new Set())
+        keyHandlers.forEach((handler) => {
+            if (!skipSelf || handler !== handleChange) {
+                handler(activeTarget, value)
+            }
+        })
         onChange(activeTarget, value)
     }
 

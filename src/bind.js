@@ -1,7 +1,22 @@
-import { useMemo } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
+import { useBoundContext } from "./bound"
 import { useBoundValue } from "./bound-value"
+import { defaultExtractor } from "./defaultExtractor"
+import { createEvent } from "./event"
+import { stringToTitleCaseLabel } from "./stringToTitleCaseLabel"
+import { withDataBinding } from "./withDataBinding"
 
 export const DontSetValue = Symbol("DontSetValue")
+
+export const boundComponentProperties = createEvent()
+
+boundComponentProperties.on((props, { field }) => {
+    props.label ??= stringToTitleCaseLabel(field)
+})
+
+export function Binding({ children }) {
+    return withDataBinding(<>{children}</>)
+}
 
 export function bind(
     component,
@@ -33,52 +48,24 @@ export function bind(
     }
 }
 
-function stringToTitleCaseLabel(inputString) {
-    // Split the input string by spaces and camelCase boundaries
-    const words = inputString.split(/(?=[A-Z])|\s+/)
-
-    // Capitalize the first letter of each word and join them
-    const titleCaseLabel = words
-        .map((word) => {
-            // Handle acronyms (e.g., "HTTP" or "XML")
-            if (word === word.toUpperCase()) {
-                return word
-            }
-
-            // Capitalize the first letter of each word
-            return word.charAt(0).toUpperCase() + word.slice(1)
-        })
-        .join(" ")
-
-    return titleCaseLabel
-}
-
-function isReactEvent(value) {
-    return (
-        typeof value === "object" && // Check if it's an object
-        "target" in value && // Check for the 'target' property
-        "type" in value && // Check for the 'type' property
-        typeof value.preventDefault === "function" // Check for the 'preventDefault' method
-    )
-}
-
-function defaultExtractor(e, v) {
-    if (v !== undefined) return v
-    if (e?.target?.value !== undefined) return e.target.value
-    if (!isReactEvent(e)) return e
-    return DontSetValue
-}
-
 export const B = Bind
 
 export function Bind({
+    blur,
     field,
     defaultValue = "",
     changeProp = "onChange",
     valueProp = "value",
     extract = defaultExtractor,
+    transformIn = (v) => v,
+    transformOut = (v) => v,
+    target,
     children
 }) {
+    const [, setId] = useState(0)
+    const context = useBoundContext()
+    const { target: boundTarget } = context
+    target ??= boundTarget
     if (children?.$$typeof !== Symbol.for("react.element"))
         return <div>{field} Must be bound to a single component</div>
 
@@ -88,39 +75,63 @@ export function Bind({
         return result
     }, [children])
 
-    const [value, setValue] = useBoundValue(fieldToUse, defaultValue)
-    return {
-        ...children,
-        props: {
+    const [value, setValue] = useBoundValue(fieldToUse, defaultValue, target)
+    const [current, setCurrent] = useState(transformIn(value))
+    useEffect(updateCurrentValue, [value])
+    const handleBlur = useCallback(_handleBlur, [current])
+    const { onBlur } = children.props
+
+    const props = boundComponentProperties.raise(
+        {
             ...children.props,
-            [valueProp]: value,
+            onBlur: handleBlur,
+            [valueProp]: current,
             [changeProp]: (...params) => {
                 const result = extract(...params)
-                if (result !== DontSetValue) setValue(result)
+                setCurrentValue(result)
             }
+        },
+        {
+            field,
+            value: transformOut(current),
+            target,
+            context,
+            valueProp,
+            changeProp,
+            refresh
         }
-    }
-}
+    )
 
-export function withDataBinding(param) {
-    if(typeof param === "function") {
-        return function BoundComponent(...params) {
-            return withDataBinding(param(...params))
-        }
+    return {
+        ...children,
+        props
     }
-    return scan(param)
 
-    function scan(element) {
-        if(!element) return element
-        
-        
-        for(const child of element) {
-            scan(child)
-            const {field, defaultValue, valueProp = "value", changeProp = "onChange", extract = defaultExtractor} = child.props
-            if(field) {
-                
-            }
+    function setCurrentValue(v) {
+        setCurrent(v)
+        const transformed = transformOut(v)
+        if (value === transformed) return
+        if (!blur) {
+            setValue(transformed, true)
         }
     }
-    
+
+    function _handleBlur(...params) {
+        if (onBlur) {
+            onBlur(...params)
+        }
+        if (blur) {
+            const transformed = transformOut(current)
+            if (value === transformed) return
+            setValue(transformed)
+        }
+    }
+
+    function updateCurrentValue() {
+        setCurrent(transformIn(value))
+    }
+
+    function refresh() {
+        setId((i) => i + 1)
+    }
 }
